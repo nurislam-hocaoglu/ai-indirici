@@ -1,0 +1,125 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Shared network — all services communicate by service name (e.g. sonarr:8989)
+# ---------------------------------------------------------------------------
+networks:
+  medianet:
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# Named volumes for persistent data
+# ---------------------------------------------------------------------------
+volumes:
+  sonarr-config:
+  bazarr-config:
+  jellyfin-config:
+  jellyfin-cache:
+  qbittorrent-config:
+  tv-media:
+  downloads:
+
+services:
+
+  # --------------------------------------------------------------------------
+  # qBittorrent — torrent client
+  # Web UI on host: http://localhost:8180  (default: admin / adminadmin)
+  # Change the default password immediately after first run.
+  # --------------------------------------------------------------------------
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    networks: [medianet]
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+      - WEBUI_PORT=8080
+    volumes:
+      - qbittorrent-config:/config
+      - downloads:/downloads
+    ports:
+      - "8180:8080"    # Web UI  (host 8180 to avoid collision)
+      - "6881:6881"    # BitTorrent TCP
+      - "6881:6881/udp"
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Sonarr — TV series management & download orchestration
+  # Web UI on host: http://localhost:8989
+  # --------------------------------------------------------------------------
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    networks: [medianet]
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+    volumes:
+      - sonarr-config:/config
+      - tv-media:/tv            # final media destination (Sonarr moves here)
+      - downloads:/downloads    # completed downloads (Sonarr hardlinks/moves from)
+    ports:
+      - "8989:8989"
+    depends_on: [qbittorrent]
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Bazarr — subtitle management
+  # Web UI on host: http://localhost:6767
+  # --------------------------------------------------------------------------
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    networks: [medianet]
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+    volumes:
+      - bazarr-config:/config
+      - tv-media:/tv
+    ports:
+      - "6767:6767"
+    depends_on: [sonarr]
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Jellyfin — media server
+  # Web UI on host: http://localhost:8096
+  # --------------------------------------------------------------------------
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    networks: [medianet]
+    environment:
+      - TZ=Europe/Istanbul
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - tv-media:/media/tv:ro     # read-only for security
+    ports:
+      - "8096:8096"
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Telegram Bot — the orchestrator
+  # Internal port 8080 receives Sonarr webhooks.
+  # Exposed as 8088 on the host so Sonarr's webhook URL is:
+  #   http://bot:8080/webhook/sonarr  (inside docker network)
+  # --------------------------------------------------------------------------
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mediabot
+    networks: [medianet]
+    env_file: .env
+    ports:
+      - "8088:8080"
+    depends_on:
+      - sonarr
+      - bazarr
+      - jellyfin
+    restart: unless-stopped
