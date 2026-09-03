@@ -1,6 +1,6 @@
 """
 TMDB API service module.
-Used for series validation and poster fetching before adding to Sonarr.
+Used for movie metadata validation and poster fetching before adding to Radarr.
 """
 
 import logging
@@ -51,6 +51,34 @@ class TMDBAPI:
         }
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(f"{TMDB_BASE}/tv/{tmdb_id}", params=params)
+            if resp.status_code >= 400:
+                raise TMDBError(resp.status_code, resp.text)
+            return resp.json()
+
+    async def search_movie(self, query: str, language: str = "tr-TR") -> list[dict]:
+        """Search TMDB for movies by name."""
+        params = {
+            "api_key": self.api_key,
+            "query": query,
+            "language": language,
+            "include_adult": False,
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{TMDB_BASE}/search/movie", params=params)
+            if resp.status_code >= 400:
+                raise TMDBError(resp.status_code, resp.text)
+            data = resp.json()
+            return data.get("results", [])
+
+    async def get_movie_details(self, tmdb_id: int, language: str = "tr-TR") -> dict:
+        """Get full details for a movie."""
+        params = {
+            "api_key": self.api_key,
+            "language": language,
+            "append_to_response": "external_ids",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{TMDB_BASE}/movie/{tmdb_id}", params=params)
             if resp.status_code >= 400:
                 raise TMDBError(resp.status_code, resp.text)
             return resp.json()

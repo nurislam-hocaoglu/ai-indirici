@@ -3,6 +3,7 @@ Centralized configuration using Pydantic Settings.
 All values loaded from environment variables / .env file.
 """
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,15 +20,24 @@ class Settings(BaseSettings):
     ALLOWED_USER_IDS: list[int] = []  # empty = allow all (not recommended)
     ADMIN_CHAT_ID: int  # receives error logs and fallback notifications
 
+    @field_validator("ALLOWED_USER_IDS", mode="before")
+    def parse_allowed_users(cls, v: any) -> list[int]:
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [int(x.strip()) for x in v.split(",") if x.strip()]
+        if isinstance(v, int):
+            return [v]
+        return v
+
     # --- TMDB ---
     TMDB_API_KEY: str
 
-    # --- Sonarr ---
-    SONARR_URL: str = "http://sonarr:8989"
-    SONARR_API_KEY: str
-    SONARR_QUALITY_PROFILE_ID: int = 1
-    SONARR_LANGUAGE_PROFILE_ID: int = 1
-    SONARR_ROOT_FOLDER: str = "/tv"
+    # --- Radarr ---
+    RADARR_URL: str = "http://radarr:7878"
+    RADARR_API_KEY: str
+    RADARR_QUALITY_PROFILE_ID: int = 1
+    RADARR_ROOT_FOLDER: str = "/movies"
 
     # --- Bazarr ---
     BAZARR_URL: str = "http://bazarr:6767"
@@ -39,11 +49,12 @@ class Settings(BaseSettings):
 
     # --- Webhook Server ---
     WEBHOOK_HOST: str = "0.0.0.0"
-    WEBHOOK_PORT: int = 8080
+    WEBHOOK_PORT: int = 9090
 
     # --- Misc ---
     LOG_LEVEL: str = "INFO"
-    SUBTITLE_LANGUAGE: str = "tr"
+    SUBTITLE_LANGUAGE: str = "tr,en"
+    SUBTITLE_PROFILE: str = "stand"
 
 
 settings = Settings()

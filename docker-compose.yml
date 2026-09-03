@@ -1,7 +1,7 @@
 version: "3.9"
 
 # ---------------------------------------------------------------------------
-# Shared network — all services communicate by service name (e.g. sonarr:8989)
+# Shared network — all services communicate by service name (e.g. radarr:7878)
 # ---------------------------------------------------------------------------
 networks:
   medianet:
@@ -11,12 +11,12 @@ networks:
 # Named volumes for persistent data
 # ---------------------------------------------------------------------------
 volumes:
-  sonarr-config:
+  radarr-config:
   bazarr-config:
   jellyfin-config:
   jellyfin-cache:
   qbittorrent-config:
-  tv-media:
+  movies-media:
   downloads:
 
 services:
@@ -45,23 +45,23 @@ services:
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # Sonarr — TV series management & download orchestration
-  # Web UI on host: http://localhost:8989
+  # Radarr — Movie management & download orchestration
+  # Web UI on host: http://localhost:7878
   # --------------------------------------------------------------------------
-  sonarr:
-    image: lscr.io/linuxserver/sonarr:latest
-    container_name: sonarr
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
     networks: [medianet]
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Istanbul
     volumes:
-      - sonarr-config:/config
-      - tv-media:/tv            # final media destination (Sonarr moves here)
-      - downloads:/downloads    # completed downloads (Sonarr hardlinks/moves from)
+      - radarr-config:/config
+      - movies-media:/movies         # final media destination (Radarr moves here)
+      - downloads:/downloads         # completed downloads (Radarr hardlinks/moves from)
     ports:
-      - "8989:8989"
+      - "7878:7878"
     depends_on: [qbittorrent]
     restart: unless-stopped
 
@@ -79,10 +79,10 @@ services:
       - TZ=Europe/Istanbul
     volumes:
       - bazarr-config:/config
-      - tv-media:/tv
+      - movies-media:/movies
     ports:
       - "6767:6767"
-    depends_on: [sonarr]
+    depends_on: [radarr]
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
@@ -98,16 +98,16 @@ services:
     volumes:
       - jellyfin-config:/config
       - jellyfin-cache:/cache
-      - tv-media:/media/tv:ro     # read-only for security
+      - movies-media:/media/movies:ro  # read-only for security
     ports:
       - "8096:8096"
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
   # Telegram Bot — the orchestrator
-  # Internal port 8080 receives Sonarr webhooks.
-  # Exposed as 8088 on the host so Sonarr's webhook URL is:
-  #   http://bot:8080/webhook/sonarr  (inside docker network)
+  # Internal port 8080 receives Radarr webhooks.
+  # Exposed as 8088 on the host so Radarr's webhook URL is:
+  #   http://bot:8080/webhook/radarr  (inside docker network)
   # --------------------------------------------------------------------------
   bot:
     build:
@@ -119,7 +119,7 @@ services:
     ports:
       - "8088:8080"
     depends_on:
-      - sonarr
+      - radarr
       - bazarr
       - jellyfin
     restart: unless-stopped

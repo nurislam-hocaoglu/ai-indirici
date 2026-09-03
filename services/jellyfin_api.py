@@ -54,17 +54,26 @@ class JellyfinAPI:
         result = await self._get("Library/VirtualFolders")
         return result  # type: ignore[return-value]
 
-    async def refresh_item(self, item_id: str) -> None:
-        """Refresh metadata for a specific library item."""
-        logger.info("Refreshing Jellyfin item: %s", item_id)
-        await self._post(
-            f"Items/{item_id}/Refresh",
-            payload={
-                "Recursive": True,
-                "ImageRefreshMode": "Default",
-                "MetadataRefreshMode": "Default",
-            },
-        )
+    async def configure_auto_subtitles(
+        self, preferred_language: str = "tur", subtitle_mode: str = "Always"
+    ) -> None:
+        """
+        Configure all Jellyfin users to automatically display subtitles when a video starts.
+        Sets SubtitleMode='Always' and SubtitleLanguagePreference='tur'.
+        """
+        try:
+            users = await self._get("Users")
+            if isinstance(users, list):
+                for u in users:
+                    uid = u.get("Id")
+                    conf = u.get("Configuration", {})
+                    conf["SubtitleMode"] = subtitle_mode
+                    conf["SubtitleLanguagePreference"] = preferred_language
+                    conf["RememberSubtitleSelections"] = True
+                    await self._post(f"Users/{uid}/Configuration", payload=conf)
+                    logger.info("Configured automatic subtitles for Jellyfin user: %s", u.get("Name"))
+        except Exception as exc:
+            logger.warning("Could not auto-configure Jellyfin subtitle preferences: %s", exc)
 
 
 jellyfin = JellyfinAPI()

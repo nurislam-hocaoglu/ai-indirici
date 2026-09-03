@@ -13,14 +13,13 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.filters import AllowedUserFilter
 from bot.keyboards import (
-    confirm_series_keyboard,
-    monitor_mode_keyboard,
-    series_selection_keyboard,
+    confirm_movie_keyboard,
+    movie_selection_keyboard,
 )
 from bot.states import DownloadFlow
 from config import settings
 from services.jellyfin_api import JellyfinError, jellyfin
-from services.sonarr_api import SonarrError, sonarr
+from services.radarr_api import RadarrError, radarr
 from services.tmdb_api import TMDBError, tmdb
 from services.webhook_listener import register_pending
 
@@ -57,10 +56,10 @@ async def _log_error(bot, text: str) -> None:
 @router.message(Command("start", "yardim"))
 async def cmd_help(message: Message) -> None:
     await message.answer(
-        "🎬 <b>AI İndirici Bot</b>\n\n"
+        "🎬 <b>AI Film İndirici Bot</b>\n\n"
         "<b>Komutlar:</b>\n"
-        "/indir &lt;dizi adı&gt; — Dizi indir\n"
-        "/durum — Servis durumlarını kontrol et\n"
+        "/indir &lt;film adı&gt; — Film ara ve indir\n"
+        "/durum — Servis durumlarını kontrol et (Radarr & Jellyfin)\n"
         "/iptal — Aktif işlemi iptal et\n"
         "/yardim — Bu mesajı göster",
         parse_mode="HTML",
@@ -86,14 +85,14 @@ async def cmd_status(message: Message) -> None:
     except Exception as e:
         lines.append(f"❌ Jellyfin: {e}")
 
-    # Sonarr
+    # Radarr
     try:
-        await sonarr.get_root_folders()
-        lines.append("✅ Sonarr: çalışıyor")
-    except SonarrError as e:
-        lines.append(f"❌ Sonarr: HTTP {e.status_code}")
+        await radarr.get_root_folders()
+        lines.append("✅ Radarr: çalışıyor")
+    except RadarrError as e:
+        lines.append(f"❌ Radarr: HTTP {e.status_code}")
     except Exception as e:
-        lines.append(f"❌ Sonarr: {e}")
+        lines.append(f"❌ Radarr: {e}")
 
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
 
@@ -113,14 +112,14 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /indir <dizi adı>  — Step 1: TMDB search
+# /indir <film adı>  — Step 1: TMDB movie search
 # ---------------------------------------------------------------------------
 
 @router.message(Command("indir"))
 async def cmd_download(message: Message, state: FSMContext) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip():
-        await message.answer("❗ Kullanım: /indir <i>Dizi Adı</i>", parse_mode="HTML")
+        await message.answer("❗ Kullanım: /indir <i>Film Adı</i>", parse_mode="HTML")
         return
 
     query = args[1].strip()
@@ -128,7 +127,7 @@ async def cmd_download(message: Message, state: FSMContext) -> None:
     msg = await message.answer(f"🔍 <b>{query}</b> aranıyor...", parse_mode="HTML")
 
     try:
-        results = await tmdb.search_tv(query)
+        results = await tmdb.search_movie(query)
     except TMDBError as e:
         await msg.edit_text(
             f"❌ TMDB hatası: HTTP {e.status_code}\n<code>{e.detail[:200]}</code>",
@@ -136,7 +135,7 @@ async def cmd_download(message: Message, state: FSMContext) -> None:
         )
         await _log_error(
             message.bot,
-            f"TMDB search failed for '{query}'\nHTTP {e.status_code}: {e.detail}",
+            f"TMDB movie search failed for '{query}'\nHTTP {e.status_code}: {e.detail}",
         )
         await state.clear()
         return
@@ -149,7 +148,7 @@ async def cmd_download(message: Message, state: FSMContext) -> None:
     await state.update_data(tmdb_results=results)
     await state.set_state(DownloadFlow.selecting)
 
-    keyboard = series_selection_keyboard(results)
+    keyboard = movie_selection_keyboard(results)
     await msg.edit_text(
         f"🎬 <b>{len(results[:10])}</b> sonuç bulundu. Hangisini indirmek istiyorsunuz?",
         parse_mode="HTML",
@@ -158,18 +157,18 @@ async def cmd_download(message: Message, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Callback: series selection (sel:<tmdb_id>)  — Step 2: Show detail + confirm
+# Callback: movie selection (sel:<tmdb_id>)  — Step 2: Show detail + confirm
 # ---------------------------------------------------------------------------
 
 @router.callback_query(DownloadFlow.selecting, F.data.startswith("sel:"))
-async def cb_select_series(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_select_movie(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     tmdb_id = int(callback.data.split(":")[1])
 
-    await _safe_edit(callback, "⏳ Dizi bilgileri alınıyor...", parse_mode="HTML")
+    await _safe_edit(callback, "⏳ Film bilgileri alınıyor...", parse_mode="HTML")
 
     try:
-        details = await tmdb.get_tv_details(tmdb_id)
+        details = await tmdb.get_movie_details(tmdb_id)
     except TMDBError as e:
         await _safe_edit(
             callback,
@@ -178,7 +177,7 @@ async def cb_select_series(callback: CallbackQuery, state: FSMContext) -> None:
         )
         await _log_error(
             callback.bot,
-            f"TMDB detail fetch failed tmdb_id={tmdb_id}\nHTTP {e.status_code}: {e.detail}",
+            f"TMDB movie detail fetch failed tmdb_id={tmdb_id}\nHTTP {e.status_code}: {e.detail}",
         )
         await state.clear()
         return
@@ -186,143 +185,128 @@ async def cb_select_series(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(selected_tmdb_id=tmdb_id, tmdb_details=details)
     await state.set_state(DownloadFlow.confirming)
 
-    name = details.get("name", "?")
-    year = (details.get("first_air_date") or "")[:4] or "?"
-    overview = (details.get("overview") or "Açıklama yok.")[:300]
-    seasons = details.get("number_of_seasons", "?")
-    episodes = details.get("number_of_episodes", "?")
-    tvdb_id = details.get("external_ids", {}).get("tvdb_id", "Bilinmiyor")
+    title = details.get("title") or details.get("name", "?")
+    orig_title = details.get("original_title", "")
+    year = (details.get("release_date") or "")[:4] or "?"
+    overview = (details.get("overview") or "Açıklama bulunmuyor.")[:350]
+    vote = details.get("vote_average", 0)
+    runtime = details.get("runtime")
+    genres = ", ".join(g.get("name", "") for g in details.get("genres", []))
 
-    text = (
-        f"📺 <b>{name}</b> ({year})\n"
-        f"📅 Sezon: {seasons} | 🎞 Bölüm: {episodes}\n"
-        f"🔑 TVDB ID: <code>{tvdb_id}</code>\n\n"
-        f"📝 {overview}\n\n"
-        f"İndir ve monitöre al?"
-    )
+    info_lines = [f"🎬 <b>{title}</b> ({year})"]
+    if orig_title and orig_title.lower() != title.lower():
+        info_lines.append(f"<i>Orijinal Adı: {orig_title}</i>")
+    if vote:
+        info_lines.append(f"⭐ Puan: {vote:.1f}/10")
+    if runtime:
+        info_lines.append(f"⏱️ Süre: {runtime} dakika")
+    if genres:
+        info_lines.append(f"🎭 Tür: {genres}")
+    info_lines.append(f"🔑 TMDB ID: <code>{tmdb_id}</code>")
+    info_lines.append(f"\n📝 {overview}")
+    info_lines.append("\nFilmi Radarr ile indirip Jellyfin'e eklemek istiyor musunuz?")
 
-    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=confirm_series_keyboard(tmdb_id))
+    text = "\n".join(info_lines)
+    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=confirm_movie_keyboard(tmdb_id))
 
 
 # ---------------------------------------------------------------------------
-# Callback: confirm (confirm:<tmdb_id>)  — Step 3: Choose monitor mode
+# Callback: confirm (confirm:<tmdb_id>)  — Step 3: Add to Radarr & start search
 # ---------------------------------------------------------------------------
 
 @router.callback_query(DownloadFlow.confirming, F.data.startswith("confirm:"))
-async def cb_confirm_series(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    tmdb_id = int(callback.data.split(":")[1])
-
-    await state.set_state(DownloadFlow.choosing_monitor)
-    await _safe_edit(
-        callback,
-        "📂 Hangi bölümleri izlemek istiyorsunuz?",
-        parse_mode="HTML",
-        reply_markup=monitor_mode_keyboard(tmdb_id),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Callback: monitor mode (monitor:<tmdb_id>:<mode>)  — Step 4: Add to Sonarr
-# ---------------------------------------------------------------------------
-
-@router.callback_query(DownloadFlow.choosing_monitor, F.data.startswith("monitor:"))
-async def cb_choose_monitor(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_confirm_movie(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     parts = callback.data.split(":")
     tmdb_id = int(parts[1])
-    monitor_mode = parts[2]
 
     data = await state.get_data()
     details: dict = data.get("tmdb_details", {})
     await state.clear()
 
-    name = details.get("name", "?")
-    year = int((details.get("first_air_date") or "0000")[:4] or 0)
-    tvdb_id: int = details.get("external_ids", {}).get("tvdb_id")
-    images = details.get("poster_path") and [
-        {
+    title = details.get("title") or details.get("name", "?")
+    year_str = (details.get("release_date") or "0000")[:4]
+    year = int(year_str) if year_str.isdigit() else 0
+
+    images = []
+    if details.get("poster_path"):
+        images.append({
             "coverType": "poster",
             "url": tmdb.poster_url(details.get("poster_path")),
-        }
-    ] or []
-    # Build seasons list: all seasons monitored
-    seasons = [
-        {"seasonNumber": s.get("season_number", 0), "monitored": True}
-        for s in details.get("seasons", [])
-    ]
+        })
 
-    if not tvdb_id:
-        await _safe_edit(
-            callback,
-            "❌ Bu dizinin TVDB ID'si bulunamadı. Sonarr bu dizi için çalışamaz.",
-            parse_mode="HTML",
-        )
-        return
+    await _safe_edit(callback, f"⏳ <b>{title}</b> Radarr'a ekleniyor...", parse_mode="HTML")
 
-    await _safe_edit(callback, f"⏳ <b>{name}</b> Sonarr'a ekleniyor...", parse_mode="HTML")
+    # Determine root folder (fall back to Radarr's configured folders if needed)
+    root_folder = settings.RADARR_ROOT_FOLDER
+    try:
+        radarr_folders = await radarr.get_root_folders()
+        folder_paths = [f.get("path") for f in radarr_folders if f.get("path")]
+        if folder_paths and root_folder not in folder_paths:
+            # Prefer folder containing jellyfin if available
+            root_folder = next((p for p in folder_paths if "jellyfin" in p.lower()), folder_paths[0])
+    except Exception as exc:
+        logger.warning("Could not check Radarr root folders dynamically: %s", exc)
 
     try:
-        series_obj = await sonarr.add_series(
-            tvdb_id=tvdb_id,
-            title=name,
+        movie_obj = await radarr.add_movie(
+            tmdb_id=tmdb_id,
+            title=title,
             year=year,
             images=images,
-            seasons=seasons,
-            root_folder_path=settings.SONARR_ROOT_FOLDER,
-            quality_profile_id=settings.SONARR_QUALITY_PROFILE_ID,
-            language_profile_id=settings.SONARR_LANGUAGE_PROFILE_ID,
-            monitor_type=monitor_mode,
-            search_for_missing=True,
+            root_folder_path=root_folder,
+            quality_profile_id=settings.RADARR_QUALITY_PROFILE_ID,
+            monitored=True,
+            search_for_movie=True,
         )
-    except SonarrError as e:
-        # 400 can mean the series already exists — handle gracefully
-        if e.status_code == 400 and "already been added" in e.detail.lower():
+    except RadarrError as e:
+        # Check if movie is already added in Radarr
+        if e.status_code == 400 and ("already been added" in e.detail.lower() or "exists" in e.detail.lower()):
             await _safe_edit(
                 callback,
-                f"ℹ️ <b>{name}</b> zaten Sonarr'da mevcut. Arama başlatılıyor...",
+                f"ℹ️ <b>{title}</b> zaten Radarr'da mevcut. Torrent araması tetikleniyor...",
                 parse_mode="HTML",
             )
-            # Lookup existing series in Sonarr
             try:
-                lookup = await sonarr.lookup_series(name)
+                all_movies = await radarr.get_all_movies()
                 existing = next(
-                    (s for s in lookup if s.get("tvdbId") == tvdb_id and s.get("id")), None
+                    (m for m in all_movies if m.get("tmdbId") == tmdb_id and m.get("id")), None
                 )
                 if existing:
-                    sonarr_series_id = existing["id"]
-                    await sonarr.command_search_series(sonarr_series_id)
-                    register_pending(sonarr_series_id, callback.from_user.id)
-            except SonarrError as inner_e:
+                    radarr_movie_id = existing["id"]
+                    await radarr.command_search_movie(radarr_movie_id)
+                    register_pending(radarr_movie_id, callback.from_user.id)
+            except Exception as inner_e:
                 await _log_error(
                     callback.bot,
-                    f"Sonarr existing series search failed: {inner_e}",
+                    f"Radarr existing movie search failed: {inner_e}",
                 )
             return
         else:
             error_text = (
-                f"❌ <b>Sonarr Hatası</b>\n"
-                f"Dizi: {name}\n"
+                f"❌ <b>Radarr Hatası</b>\n"
+                f"Film: {title}\n"
                 f"HTTP {e.status_code}: <code>{e.detail[:300]}</code>"
             )
             await _safe_edit(callback, error_text, parse_mode="HTML")
-            await _log_error(callback.bot, f"Sonarr add_series failed for {name}:\n{e}")
+            await _log_error(callback.bot, f"Radarr add_movie failed for {title}:\n{e}")
             return
 
-    sonarr_series_id: int = series_obj.get("id")
-    register_pending(sonarr_series_id, callback.from_user.id)
+    radarr_movie_id: int = movie_obj.get("id")
+    if radarr_movie_id:
+        register_pending(radarr_movie_id, callback.from_user.id)
 
     await _safe_edit(
         callback,
-        f"🚀 <b>{name}</b> Sonarr'a eklendi!\n"
-        f"📡 Sonarr arka planda torrent arıyor...\n"
-        f"📲 İndirme tamamlandığında buradan bildirim alacaksınız.",
+        f"🚀 <b>{title}</b> Radarr'a eklendi!\n"
+        f"📡 Radarr torrent aramaya başladı...\n"
+        f"📥 Film indiğinde Jellyfin kütüphanesine aktarılacak ve size bildirim gönderilecek.",
         parse_mode="HTML",
     )
 
     logger.info(
-        "Series added: %s (tvdbId=%s, sonarrId=%s, monitor=%s) for user=%s",
-        name, tvdb_id, sonarr_series_id, monitor_mode, callback.from_user.id,
+        "Movie added: %s (tmdbId=%s, radarrId=%s) for user=%s",
+        title, tmdb_id, radarr_movie_id, callback.from_user.id,
     )
 
 

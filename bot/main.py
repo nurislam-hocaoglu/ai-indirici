@@ -3,12 +3,16 @@ Bot entry point.
 
 Runs two concurrent async tasks:
   1. aiogram Dispatcher (Telegram long-polling)
-  2. aiohttp server (Sonarr webhook listener)
+  2. aiohttp server (Radarr webhook listener)
 """
 
 import asyncio
 import logging
 import sys
+from pathlib import Path
+
+# Add project root to sys.path so config and services can be imported regardless of execution path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -18,6 +22,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import settings
 from bot.handlers import router
+from services.jellyfin_api import jellyfin
 from services.webhook_listener import create_webhook_app, set_bot
 
 
@@ -62,11 +67,17 @@ async def main() -> None:
 
     logger.info("Starting AI İndirici bot...")
 
+    # Automatically configure Jellyfin users to show subtitles when playing
+    try:
+        await jellyfin.configure_auto_subtitles(preferred_language="tur", subtitle_mode="Always")
+    except Exception as e:
+        logger.warning("Could not auto-configure Jellyfin subtitles: %s", e)
+
     # Notify admin on startup
     try:
         await bot.send_message(
             settings.ADMIN_CHAT_ID,
-            "🟢 <b>AI İndirici Bot başlatıldı.</b>",
+            "🟢 <b>AI Film İndirici Bot başlatıldı (Radarr, Bazarr & Jellyfin).</b>",
             parse_mode="HTML",
         )
     except Exception as e:
